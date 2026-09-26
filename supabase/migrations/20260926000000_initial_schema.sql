@@ -573,6 +573,17 @@ revoke execute on function public.cleanup_orphan_tags() from public, anon;
 revoke execute on function public.seed_default_categories(uuid) from public, anon, authenticated;
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 
+-- Privilégios explícitos para usuários autenticados (não depende da opção
+-- "Automatically expose new tables" do projeto). O RLS continua filtrando as linhas.
+grant usage on schema public to authenticated;
+grant usage on schema extensions to authenticated;
+grant select, update on public.profiles to authenticated;
+grant select, insert, update, delete on
+  public.categories, public.products, public.brands, public.suppliers,
+  public.supplier_products, public.supplier_brands, public.supplier_categories
+  to authenticated;
+grant execute on function public.normalize_text(text) to authenticated;
+grant execute on function public.normalize_url(text) to authenticated;
 grant execute on function public.save_supplier(uuid, jsonb, text[], text[], uuid[], text, text) to authenticated;
 grant execute on function public.find_similar_suppliers(text, text, text, text, uuid) to authenticated;
 grant execute on function public.cleanup_orphan_tags() to authenticated;

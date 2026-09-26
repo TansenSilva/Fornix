@@ -86,6 +86,14 @@ cp .env.example .env.local   # depois preencha os valores (seção 6)
 ## 5. Configuração do Supabase
 
 1. Crie um projeto em <https://supabase.com/dashboard> (região São Paulo, se possível).
+   Use um **projeto separado** de outros apps (as cotas do plano gratuito são por projeto).
+   Na criação:
+   - **Database password:** clique em *Generate a password* e guarde-a (o app não usa, mas é
+     a senha de administrador do banco).
+   - **Enable Data API:** marcado (obrigatório — o app usa a API REST).
+   - **Automatically expose new tables:** pode deixar **desmarcado** (recomendado). A migration
+     concede explicitamente as permissões necessárias.
+   - **Enable automatic RLS:** opcional — a migration já ativa o RLS em todas as tabelas.
 2. **Aplique a migration** (seção 8). O jeito mais simples: abra **SQL Editor → New query**, cole
    todo o conteúdo de `supabase/migrations/20260926000000_initial_schema.sql` e clique em **Run**.
 3. **Desative cadastros públicos** (o app é privado):
