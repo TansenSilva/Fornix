@@ -39,7 +39,9 @@ Funcionalidades da versão 1:
 
 - Login (Supabase Auth, e-mail + senha) — todas as páginas exigem autenticação
 - Cadastrar, editar e excluir fornecedor (com confirmação)
-- Nome, nome fantasia, vendedor, WhatsApp, telefone, e-mail, site, Instagram, cidade/UF, observações
+- Nome, nome fantasia, CNPJ/CPF, vendedor, WhatsApp, telefone, e-mail, site, Instagram, observações
+- Endereço com preenchimento automático pelo CEP (ViaCEP, com BrasilAPI como alternativa)
+- Máscaras enquanto digita: telefone/WhatsApp, CNPJ/CPF (com validação, inclusive CNPJ alfanumérico) e CEP
 - Portal de compras: URL, login e **senha criptografada** (mostrar/ocultar, copiar)
 - Produtos e marcas como tags, com **autocomplete** que evita duplicidade ("Película" × "pelicula")
 - Categorias configuráveis (criar, renomear, excluir) com seleção múltipla
@@ -160,11 +162,16 @@ Studio (<http://127.0.0.1:54323>) ou pela API admin.
 
 ## 8. Migrations
 
-Os arquivos ficam em `supabase/migrations/`. A versão 1 tem uma única migration:
+Os arquivos ficam em `supabase/migrations/` e devem ser aplicados **em ordem**, cada um uma vez:
 
-- `20260926000000_initial_schema.sql` — extensões (`unaccent`, `pg_trgm`), tabelas, índices,
-  foreign keys, triggers da busca, funções RPC (`save_supplier`, `find_similar_suppliers`,
-  `cleanup_orphan_tags`), categorias padrão e políticas RLS.
+1. `20260926000000_initial_schema.sql` — extensões (`unaccent`, `pg_trgm`), tabelas, índices,
+   foreign keys, triggers da busca, funções RPC (`save_supplier`, `find_similar_suppliers`,
+   `cleanup_orphan_tags`), categorias padrão e políticas RLS.
+2. `20260927000000_supplier_document_address.sql` — CNPJ/CPF (inclui o CNPJ alfanumérico) e
+   endereço completo (CEP, rua, número, complemento, bairro); aviso de duplicidade por CNPJ/CPF.
+
+Dica para copiar um arquivo grande: abra-o no GitHub, clique em **Raw**, use Ctrl+A / Ctrl+C e
+cole no SQL Editor.
 
 Formas de aplicar:
 

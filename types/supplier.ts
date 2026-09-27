@@ -29,12 +29,19 @@ export interface Supplier {
   id: string;
   name: string;
   tradeName: string | null;
+  /** CPF (11 dígitos) ou CNPJ (14 caracteres), sem pontuação. */
+  document: string | null;
   contactName: string | null;
   whatsapp: string | null;
   phone: string | null;
   email: string | null;
   website: string | null;
   instagram: string | null;
+  cep: string | null;
+  street: string | null;
+  addressNumber: string | null;
+  complement: string | null;
+  neighborhood: string | null;
   city: string | null;
   state: string | null;
   notes: string | null;
@@ -85,12 +92,18 @@ export type PasswordAction = "keep" | "set" | "clear";
 export interface SupplierFormInput {
   name: string;
   tradeName: string;
+  document: string;
   contactName: string;
   whatsapp: string;
   phone: string;
   email: string;
   website: string;
   instagram: string;
+  cep: string;
+  street: string;
+  addressNumber: string;
+  complement: string;
+  neighborhood: string;
   city: string;
   state: string;
   notes: string;

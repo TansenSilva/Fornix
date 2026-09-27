@@ -18,8 +18,8 @@ import { mapSupplier } from "./mappers";
  * Nunca selecionamos `portal_password_encrypted` aqui — só `has_portal_password`.
  */
 const SUPPLIER_COLUMNS = `
-  id, name, trade_name, contact_name, whatsapp, phone, email, website, instagram,
-  city, state, notes, portal_url, portal_login, has_portal_password, is_favorite,
+  id, name, trade_name, document, contact_name, whatsapp, phone, email, website, instagram,
+  cep, street, address_number, complement, neighborhood, city, state, notes, portal_url, portal_login, has_portal_password, is_favorite,
   created_at, updated_at,
   supplier_products ( products ( id, name ) ),
   supplier_brands ( brands ( id, name ) ),
@@ -144,7 +144,7 @@ export async function deleteSupplier(supabase: SupabaseClient, id: string): Prom
 
 export async function findSimilarSuppliers(
   supabase: SupabaseClient,
-  params: { name: string; whatsapp: string; email: string; website: string; excludeId?: string },
+  params: { name: string; whatsapp: string; email: string; website: string; document: string; excludeId?: string },
 ): Promise<SimilarSupplier[]> {
   const { data, error } = await supabase.rpc("find_similar_suppliers", {
     p_name: params.name || null,
@@ -152,6 +152,7 @@ export async function findSimilarSuppliers(
     p_email: params.email || null,
     p_website: params.website || null,
     p_exclude_id: params.excludeId ?? null,
+    p_document: params.document || null,
   });
   if (error) throw new Error(error.message);
   return ((data ?? []) as SimilarSupplierRow[]).map((row) => ({

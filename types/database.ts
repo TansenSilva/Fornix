@@ -11,12 +11,18 @@ export interface SupplierRow {
   id: string;
   name: string;
   trade_name: string | null;
+  document: string | null;
   contact_name: string | null;
   whatsapp: string | null;
   phone: string | null;
   email: string | null;
   website: string | null;
   instagram: string | null;
+  cep: string | null;
+  street: string | null;
+  address_number: string | null;
+  complement: string | null;
+  neighborhood: string | null;
   city: string | null;
   state: string | null;
   notes: string | null;

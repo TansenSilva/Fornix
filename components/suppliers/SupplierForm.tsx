@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Eye, EyeOff, KeyRound, Loader2, Save, Star, Trash2 } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Loader2, MapPin, Save, Star, Trash2 } from "lucide-react";
 import { saveSupplierAction } from "@/app/actions/suppliers";
 import { BrandTagInput } from "@/components/tags/BrandTagInput";
 import { CategorySelector } from "@/components/tags/CategorySelector";
@@ -11,8 +11,11 @@ import { useToast } from "@/components/ui/Toast";
 import { buttonClasses } from "@/components/ui/button";
 import { Field, inputClasses } from "@/components/ui/field";
 import { useDuplicateCheck } from "@/hooks/useDuplicateCheck";
+import { lookupCep } from "@/lib/cep";
 import { validateSupplier } from "@/lib/validation/supplier";
 import type { Brand, Category, PasswordAction, Product, Supplier, SupplierFormInput } from "@/types/supplier";
+import { formatDocument } from "@/utils/document";
+import { maskCep, maskCpfCnpj, maskPhone } from "@/utils/masks";
 import { formatPhone } from "@/utils/phone";
 import { BRAZILIAN_STATES } from "@/utils/states";
 import { DuplicateWarning } from "./DuplicateWarning";
@@ -26,17 +29,24 @@ interface SupplierFormProps {
 }
 
 type FieldName = keyof SupplierFormInput;
+type CepStatus = "idle" | "loading" | "found" | "notfound" | "error";
 
 function initialValues(supplier?: Supplier): SupplierFormInput {
   return {
     name: supplier?.name ?? "",
     tradeName: supplier?.tradeName ?? "",
+    document: formatDocument(supplier?.document),
     contactName: supplier?.contactName ?? "",
     whatsapp: supplier?.whatsapp ? formatPhone(supplier.whatsapp) : "",
     phone: supplier?.phone ? formatPhone(supplier.phone) : "",
     email: supplier?.email ?? "",
     website: supplier?.website ?? "",
     instagram: supplier?.instagram ? `@${supplier.instagram}` : "",
+    cep: supplier?.cep ? maskCep(supplier.cep) : "",
+    street: supplier?.street ?? "",
+    addressNumber: supplier?.addressNumber ?? "",
+    complement: supplier?.complement ?? "",
+    neighborhood: supplier?.neighborhood ?? "",
     city: supplier?.city ?? "",
     state: supplier?.state ?? "",
     notes: supplier?.notes ?? "",
@@ -61,11 +71,62 @@ export function SupplierForm({ supplier, categories: initialCategories, products
   const [saving, setSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [editingPassword, setEditingPassword] = useState(!supplier?.hasPortalPassword);
+  const [cepStatus, setCepStatus] = useState<CepStatus>("idle");
+  const lastCep = useRef(supplier?.cep ?? "");
+  const cepRequest = useRef<AbortController | null>(null);
 
   const duplicates = useDuplicateCheck(
-    { name: values.name, whatsapp: values.whatsapp, email: values.email, website: values.website },
+    {
+      name: values.name,
+      whatsapp: values.whatsapp,
+      email: values.email,
+      website: values.website,
+      document: values.document,
+    },
     supplier?.id,
   );
+
+  /** Busca o endereço quando o CEP fica completo e preenche rua, bairro, cidade e UF. */
+  async function searchCep(cep: string) {
+    cepRequest.current?.abort();
+    const controller = new AbortController();
+    cepRequest.current = controller;
+    lastCep.current = cep;
+    setCepStatus("loading");
+    try {
+      const address = await lookupCep(cep, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!address) {
+        setCepStatus("notfound");
+        return;
+      }
+      setValues((current) => ({
+        ...current,
+        street: address.street || current.street,
+        neighborhood: address.neighborhood || current.neighborhood,
+        city: address.city || current.city,
+        state: address.state || current.state,
+      }));
+      setCepStatus("found");
+      // CEP não traz número/complemento: leva o cursor para o próximo campo a preencher.
+      document.getElementById(address.street ? "addressNumber" : "street")?.focus();
+    } catch {
+      if (!controller.signal.aborted) setCepStatus("error");
+    }
+  }
+
+  function onCepChange(raw: string) {
+    const masked = maskCep(raw);
+    set("cep", masked);
+    const digits = masked.replace(/\D/g, "");
+    if (digits.length === 8 && digits !== lastCep.current) {
+      void searchCep(digits);
+    } else if (digits.length < 8) {
+      cepRequest.current?.abort();
+      lastCep.current = "";
+      setCepStatus("idle");
+    }
+  }
 
   function set<K extends FieldName>(field: K, value: SupplierFormInput[K]) {
     setValues((current) => ({ ...current, [field]: value }));
@@ -116,6 +177,17 @@ export function SupplierForm({ supplier, categories: initialCategories, products
     />
   );
 
+  /** Campo com máscara aplicada enquanto digita. */
+  const masked = (
+    field: FieldName,
+    mask: (value: string) => string,
+    props: React.InputHTMLAttributes<HTMLInputElement> = {},
+  ) =>
+    input(field, {
+      ...props,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => set(field, mask(event.target.value) as never),
+    });
+
   const hasPortalData = Boolean(values.portalUrl || values.portalLogin || supplier?.hasPortalPassword);
 
   return (
@@ -127,6 +199,15 @@ export function SupplierForm({ supplier, categories: initialCategories, products
           </Field>
           <Field id="tradeName" label="Nome fantasia" error={fieldError("tradeName")}>
             {input("tradeName", { maxLength: 120 })}
+          </Field>
+          <Field id="document" label="CNPJ / CPF" error={fieldError("document")}>
+            {masked("document", maskCpfCnpj, {
+              placeholder: "00.000.000/0000-00",
+              autoCapitalize: "characters",
+              autoComplete: "off",
+              spellCheck: false,
+              maxLength: 18,
+            })}
           </Field>
         </div>
         <div className="mt-3">
@@ -160,10 +241,10 @@ export function SupplierForm({ supplier, categories: initialCategories, products
             {input("contactName", { autoComplete: "name", maxLength: 120 })}
           </Field>
           <Field id="whatsapp" label="WhatsApp" hint="Com DDD. Ex.: (11) 98888-7777" error={fieldError("whatsapp")}>
-            {input("whatsapp", { type: "tel", inputMode: "tel", autoComplete: "tel", maxLength: 25 })}
+            {masked("whatsapp", maskPhone, { type: "tel", inputMode: "tel", autoComplete: "tel", maxLength: 25, placeholder: "(11) 98888-7777" })}
           </Field>
           <Field id="phone" label="Telefone" error={fieldError("phone")}>
-            {input("phone", { type: "tel", inputMode: "tel", maxLength: 25 })}
+            {masked("phone", maskPhone, { type: "tel", inputMode: "tel", maxLength: 25, placeholder: "(11) 2692-2596" })}
           </Field>
           <Field id="email" label="E-mail" error={fieldError("email")}>
             {input("email", { type: "email", inputMode: "email", autoComplete: "email", maxLength: 120 })}
@@ -174,7 +255,64 @@ export function SupplierForm({ supplier, categories: initialCategories, products
           <Field id="instagram" label="Instagram" error={fieldError("instagram")}>
             {input("instagram", { placeholder: "@perfil", autoCapitalize: "none", maxLength: 120 })}
           </Field>
-          <div className="grid grid-cols-[1fr_6.5rem] gap-3 md:col-span-2 md:grid-cols-[1fr_12rem]">
+        </div>
+      </FormSection>
+
+      <FormSection
+        step={3}
+        title="Endereço"
+        description={[values.street, values.city, values.state].filter(Boolean).join(", ") || "Digite o CEP para preencher"}
+      >
+        <div className="grid gap-3 md:grid-cols-6">
+          <Field
+            id="cep"
+            label="CEP"
+            className="md:col-span-2"
+            error={
+              fieldError("cep") ??
+              (cepStatus === "notfound"
+                ? "CEP não encontrado. Preencha o endereço manualmente."
+                : cepStatus === "error"
+                  ? "Não foi possível consultar o CEP agora. Preencha manualmente."
+                  : null)
+            }
+            hint={cepStatus === "found" ? "Endereço preenchido pelo CEP." : "O endereço é preenchido automaticamente."}
+          >
+            <div className="relative">
+              <input
+                id="cep"
+                value={values.cep}
+                onChange={(event) => onCepChange(event.target.value)}
+                inputMode="numeric"
+                autoComplete="postal-code"
+                placeholder="00000-000"
+                maxLength={9}
+                aria-invalid={error?.field === "cep" || cepStatus === "notfound" || undefined}
+                aria-describedby="cep-hint cep-error"
+                className={`${inputClasses(error?.field === "cep" || cepStatus === "notfound")} pr-10`}
+              />
+              <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-slate-400">
+                {cepStatus === "loading" ? (
+                  <Loader2 className="size-4 animate-spin" aria-label="Buscando CEP" />
+                ) : (
+                  <MapPin className="size-4" aria-hidden />
+                )}
+              </span>
+            </div>
+          </Field>
+          <Field id="street" label="Rua / Logradouro" className="md:col-span-4" error={fieldError("street")}>
+            {input("street", { autoComplete: "address-line1", maxLength: 120 })}
+          </Field>
+          <Field id="addressNumber" label="Número" className="md:col-span-2" error={fieldError("addressNumber")}>
+            {input("addressNumber", { inputMode: "text", maxLength: 20 })}
+          </Field>
+          <Field id="complement" label="Complemento" className="md:col-span-4" error={fieldError("complement")}>
+            {input("complement", { placeholder: "Sala, loja, bloco...", autoComplete: "address-line2", maxLength: 120 })}
+          </Field>
+          <Field id="neighborhood" label="Bairro" className="md:col-span-2" error={fieldError("neighborhood")}>
+            {input("neighborhood", { maxLength: 120 })}
+          </Field>
+          <div className="grid grid-cols-[1fr_6.5rem] gap-3 md:col-span-4 md:grid-cols-[1fr_8rem]">
             <Field id="city" label="Cidade" error={fieldError("city")}>
               {input("city", { autoComplete: "address-level2", maxLength: 120 })}
             </Field>
@@ -197,7 +335,7 @@ export function SupplierForm({ supplier, categories: initialCategories, products
         </div>
       </FormSection>
 
-      <FormSection step={3} title="Produtos" description={values.products.join(", ") || "O que este fornecedor vende"}>
+      <FormSection step={4} title="Produtos" description={values.products.join(", ") || "O que este fornecedor vende"}>
         <ProductTagInput
           values={values.products}
           onChange={(list) => set("products", list)}
@@ -206,7 +344,7 @@ export function SupplierForm({ supplier, categories: initialCategories, products
         {fieldError("products") && <p className="mt-1 text-sm text-red-600">{fieldError("products")}</p>}
       </FormSection>
 
-      <FormSection step={4} title="Marcas" description={values.brands.join(", ") || "Marcas comercializadas"}>
+      <FormSection step={5} title="Marcas" description={values.brands.join(", ") || "Marcas comercializadas"}>
         <BrandTagInput
           values={values.brands}
           onChange={(list) => set("brands", list)}
@@ -215,7 +353,7 @@ export function SupplierForm({ supplier, categories: initialCategories, products
         {fieldError("brands") && <p className="mt-1 text-sm text-red-600">{fieldError("brands")}</p>}
       </FormSection>
 
-      <FormSection step={5} title="Portal de compras" description="URL, login e senha" defaultOpen={hasPortalData}>
+      <FormSection step={6} title="Portal de compras" description="URL, login e senha" defaultOpen={hasPortalData}>
         <div className="grid gap-3 md:grid-cols-2">
           <Field id="portalUrl" label="URL do portal" error={fieldError("portalUrl")} className="md:col-span-2">
             {input("portalUrl", { type: "url", inputMode: "url", placeholder: "loja.fornecedor.com.br", maxLength: 500 })}
@@ -300,7 +438,7 @@ export function SupplierForm({ supplier, categories: initialCategories, products
         </div>
       </FormSection>
 
-      <FormSection step={6} title="Observações" description="Pedido mínimo, frete, condições..." defaultOpen={Boolean(values.notes)}>
+      <FormSection step={7} title="Observações" description="Pedido mínimo, frete, condições..." defaultOpen={Boolean(values.notes)}>
         <label htmlFor="notes" className="sr-only">
           Observações
         </label>

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
-import { ExternalLink, Globe, AtSign, Mail, MessageCircle, Phone, Store } from "lucide-react";
+import { AtSign, ExternalLink, Globe, Mail, MapPin, MessageCircle, Phone, Store } from "lucide-react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { CopyButton } from "@/components/suppliers/CopyButton";
@@ -11,6 +11,8 @@ import { Tag } from "@/components/ui/Tag";
 import { buttonClasses } from "@/components/ui/button";
 import { getSupplier } from "@/lib/data/suppliers";
 import { createClient } from "@/lib/supabase/server";
+import { documentType, formatDocument } from "@/utils/document";
+import { maskCep } from "@/utils/masks";
 import { formatPhone, telLink, whatsappLink } from "@/utils/phone";
 import { displayUrl, instagramLink, safeHref } from "@/utils/url";
 
@@ -56,6 +58,19 @@ export default async function SupplierPage({ params }: PageProps<"/fornecedores/
   const website = safeHref(supplier.website);
   const portal = safeHref(supplier.portalUrl);
   const location = [supplier.city, supplier.state].filter(Boolean).join(" / ");
+  const streetLine = [
+    [supplier.street, supplier.addressNumber].filter(Boolean).join(", "),
+    supplier.complement,
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  const cityLine = [supplier.neighborhood, [supplier.city, supplier.state].filter(Boolean).join("/")]
+    .filter(Boolean)
+    .join(" - ");
+  const cepLine = supplier.cep ? `CEP ${maskCep(supplier.cep)}` : "";
+  const fullAddress = [streetLine, cityLine, cepLine].filter(Boolean).join(", ");
+  const hasAddress = Boolean(supplier.street || supplier.cep || supplier.neighborhood);
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(fullAddress)}`;
   const hasPortal = Boolean(portal || supplier.portalLogin || supplier.hasPortalPassword);
 
   return (
@@ -113,6 +128,14 @@ export default async function SupplierPage({ params }: PageProps<"/fornecedores/
           <Card title="Contato" className="lg:row-span-2">
             <dl>
               <Row label="Fornecedor">{supplier.name}</Row>
+              {supplier.document && (
+                <Row
+                  label={documentType(supplier.document) ?? "CNPJ/CPF"}
+                  action={<CopyButton value={formatDocument(supplier.document)} label="Copiar CNPJ/CPF" />}
+                >
+                  <span className="tabular-nums">{formatDocument(supplier.document)}</span>
+                </Row>
+              )}
               {supplier.contactName && <Row label="Vendedor">{supplier.contactName}</Row>}
               {supplier.whatsapp && (
                 <Row label="WhatsApp" action={<CopyButton value={formatPhone(supplier.whatsapp)} label="Copiar WhatsApp" />}>
@@ -154,9 +177,31 @@ export default async function SupplierPage({ params }: PageProps<"/fornecedores/
                   </a>
                 </Row>
               )}
-              {location && <Row label="Cidade/UF">{location}</Row>}
+              {location && !hasAddress && <Row label="Cidade/UF">{location}</Row>}
             </dl>
           </Card>
+
+          {hasAddress && (
+            <Card title="Endereço">
+              <div className="flex items-start gap-2">
+                <address className="min-w-0 flex-1 text-sm leading-6 not-italic text-slate-800">
+                  {streetLine && <span className="block">{streetLine}</span>}
+                  {cityLine && <span className="block">{cityLine}</span>}
+                  {cepLine && <span className="block text-slate-500">{cepLine}</span>}
+                </address>
+                <CopyButton value={fullAddress} label="Copiar endereço" />
+              </div>
+              <a
+                href={mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={buttonClasses("secondary", "md", "mt-3 w-full")}
+              >
+                <MapPin className="size-4" aria-hidden />
+                Abrir no mapa
+              </a>
+            </Card>
+          )}
 
           <Card title="Produtos">
             <TagList items={supplier.products} empty="Nenhum produto cadastrado." />

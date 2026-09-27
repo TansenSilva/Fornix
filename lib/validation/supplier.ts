@@ -1,4 +1,5 @@
 import type { SupplierFormInput } from "@/types/supplier";
+import { documentType, isValidDocument, normalizeDocument } from "@/utils/document";
 import { isValidPhone, normalizePhone } from "@/utils/phone";
 import { isValidState } from "@/utils/states";
 import { cleanLabel, uniqueLabels } from "@/utils/text";
@@ -18,12 +19,18 @@ export const LIMITS = {
 export interface SupplierPayload {
   name: string;
   trade_name: string;
+  document: string;
   contact_name: string;
   whatsapp: string;
   phone: string;
   email: string;
   website: string;
   instagram: string;
+  cep: string;
+  street: string;
+  address_number: string;
+  complement: string;
+  neighborhood: string;
   city: string;
   state: string;
   notes: string;
@@ -47,6 +54,16 @@ export function validateSupplier(input: SupplierFormInput): ValidationResult {
   const name = cleanLabel(input.name ?? "");
   if (!name) return { ok: false, error: "Informe o nome do fornecedor.", field: "name" };
   if (tooLong(name, LIMITS.name)) return { ok: false, error: "Nome muito longo.", field: "name" };
+
+  const document = normalizeDocument(input.document ?? "");
+  if (document && !isValidDocument(document)) {
+    const type = documentType(document);
+    return {
+      ok: false,
+      error: type ? `${type} inválido. Confira os números.` : "CNPJ/CPF incompleto.",
+      field: "document",
+    };
+  }
 
   const whatsapp = normalizePhone(input.whatsapp ?? "");
   if (whatsapp && !isValidPhone(whatsapp)) {
@@ -74,6 +91,9 @@ export function validateSupplier(input: SupplierFormInput): ValidationResult {
     return { ok: false, error: "URL do portal inválida.", field: "portalUrl" };
   }
 
+  const cep = (input.cep ?? "").replace(/\D/g, "");
+  if (cep && cep.length !== 8) return { ok: false, error: "CEP deve ter 8 dígitos.", field: "cep" };
+
   const state = (input.state ?? "").trim().toUpperCase();
   if (state && !isValidState(state)) return { ok: false, error: "Estado inválido.", field: "state" };
 
@@ -81,6 +101,10 @@ export function validateSupplier(input: SupplierFormInput): ValidationResult {
     tradeName: cleanLabel(input.tradeName ?? ""),
     contactName: cleanLabel(input.contactName ?? ""),
     city: cleanLabel(input.city ?? ""),
+    street: cleanLabel(input.street ?? ""),
+    neighborhood: cleanLabel(input.neighborhood ?? ""),
+    complement: cleanLabel(input.complement ?? ""),
+    addressNumber: cleanLabel(input.addressNumber ?? ""),
     portalLogin: (input.portalLogin ?? "").trim(),
   };
   for (const [field, value] of Object.entries(shortFields)) {
@@ -114,12 +138,18 @@ export function validateSupplier(input: SupplierFormInput): ValidationResult {
     payload: {
       name,
       trade_name: shortFields.tradeName,
+      document,
       contact_name: shortFields.contactName,
       whatsapp,
       phone,
       email,
       website,
       instagram: normalizeInstagram(input.instagram ?? ""),
+      cep,
+      street: shortFields.street,
+      address_number: shortFields.addressNumber,
+      complement: shortFields.complement,
+      neighborhood: shortFields.neighborhood,
       city: shortFields.city,
       state,
       notes,
