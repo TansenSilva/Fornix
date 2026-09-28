@@ -13,7 +13,14 @@ import { useToast } from "@/components/ui/Toast";
 import { buttonClasses } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { serializeSupplierQuery } from "@/lib/data/query-params";
-import { DEFAULT_QUERY, SEARCH_LIMIT, searchSuppliers, setFavorite } from "@/lib/data/suppliers";
+import {
+  DEFAULT_QUERY,
+  SEARCH_LIMIT,
+  getFilterOptions,
+  getSupplierStats,
+  searchSuppliers,
+  setFavorite,
+} from "@/lib/data/suppliers";
 import { createClient } from "@/lib/supabase/client";
 import type { FilterOptions, Supplier, SupplierQuery, SupplierStats } from "@/types/supplier";
 import { normalizeText } from "@/utils/text";
@@ -37,7 +44,7 @@ export function SupplierBrowser({
   initialQuery,
   initialSuppliers,
   initialStats,
-  filterOptions,
+  filterOptions: initialFilterOptions,
   initialError,
 }: SupplierBrowserProps) {
   const { toast } = useToast();
@@ -48,6 +55,7 @@ export function SupplierBrowser({
   const [loading, setLoading] = useState(false);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [reloadKey, setReloadKey] = useState(0);
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>(initialFilterOptions);
 
   // O texto é "debounced"; filtros e ordenação aplicam na hora.
   const debouncedSearch = useDebouncedValue(query.search, SEARCH_DEBOUNCE_MS);
@@ -83,6 +91,35 @@ export function SupplierBrowser({
         if (current === requestId.current) setLoading(false);
       });
   }, [queryKey, reloadKey]);
+
+  // A página pode vir do cache do navegador (ex.: ao voltar de outra tela) ou o app
+  // pode ficar em segundo plano no celular: ao abrir/voltar, atualiza tudo.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const supabase = createClient();
+        const [nextStats, nextOptions] = await Promise.all([getSupplierStats(supabase), getFilterOptions(supabase)]);
+        if (cancelled) return;
+        setStats(nextStats);
+        setFilterOptions(nextOptions);
+        setReloadKey((key) => key + 1);
+      } catch {
+        // Mantém os dados atuais; a busca mostra o erro se houver.
+      }
+    };
+    void refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+    };
+  }, []);
 
   const updateQuery = useCallback((patch: Partial<SupplierQuery>) => {
     setQuery((current) => ({ ...current, ...patch }));
@@ -133,7 +170,7 @@ export function SupplierBrowser({
     if (error) {
       return <ErrorState message={error} onRetry={() => setReloadKey((key) => key + 1)} />;
     }
-    if (stats.suppliers === 0 && !searchText && !hasFilters) {
+    if (suppliers.length === 0 && !loading && stats.suppliers === 0 && !searchText && !hasFilters) {
       return (
         <EmptyState
           icon={<PackageSearch className="size-10" />}
