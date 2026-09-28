@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, LogOut, Plus, Tags } from "lucide-react";
+import { ArrowLeft, ClipboardList, LogOut, Plus, Tags } from "lucide-react";
 import { signOutAction } from "@/app/actions/auth";
 import { appConfig } from "@/lib/app-config";
 import { buttonClasses } from "@/components/ui/button";
@@ -35,6 +35,10 @@ export function AppHeader({ title, backHref, children, actions }: AppHeaderProps
                   Fornecedor
                 </Link>
               </span>
+              <Link href="/listas" aria-label="Listas de compras" title="Listas de compras" className={buttonClasses("ghost", "sm", "px-2.5")}>
+                <ClipboardList className="size-5" aria-hidden />
+                <span className="hidden sm:inline">Listas</span>
+              </Link>
               <Link href="/categorias" aria-label="Gerenciar categorias" title="Categorias" className={buttonClasses("ghost", "icon")}>
                 <Tags className="size-5" aria-hidden />
               </Link>

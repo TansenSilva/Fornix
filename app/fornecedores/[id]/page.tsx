@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
-import { AtSign, ExternalLink, Globe, Mail, MapPin, MessageCircle, Phone, Store } from "lucide-react";
+import Link from "next/link";
+import { AtSign, ClipboardList, ExternalLink, Globe, Mail, MapPin, MessageCircle, Phone, Plus, Store } from "lucide-react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { CopyButton } from "@/components/suppliers/CopyButton";
@@ -9,10 +10,14 @@ import { CredentialField } from "@/components/suppliers/CredentialField";
 import { SupplierDetailActions } from "@/components/suppliers/SupplierDetailActions";
 import { Tag } from "@/components/ui/Tag";
 import { buttonClasses } from "@/components/ui/button";
+import { PurchaseStatusBadge } from "@/components/purchases/PurchaseStatusBadge";
+import { getPurchaseListSummaries } from "@/lib/data/purchase-lists";
 import { getSupplier } from "@/lib/data/suppliers";
 import { createClient } from "@/lib/supabase/server";
 import { documentType, formatDocument } from "@/utils/document";
 import { maskCep } from "@/utils/masks";
+import { formatDateBr } from "@/utils/date";
+import { formatMoney } from "@/utils/money";
 import { formatPhone, telLink, whatsappLink } from "@/utils/phone";
 import { displayUrl, instagramLink, safeHref } from "@/utils/url";
 
@@ -52,7 +57,11 @@ function TagList({ items, empty }: { items: { id: string; name: string }[]; empt
 
 export default async function SupplierPage({ params }: PageProps<"/fornecedores/[id]">) {
   const { id } = await params;
-  const supplier = await getSupplier(await createClient(), id);
+  const supabase = await createClient();
+  const [supplier, orders] = await Promise.all([
+    getSupplier(supabase, id),
+    getPurchaseListSummaries(supabase, { supplierId: id, limit: 5 }).catch(() => []),
+  ]);
   if (!supplier) notFound();
 
   const website = safeHref(supplier.website);
@@ -252,6 +261,37 @@ export default async function SupplierPage({ params }: PageProps<"/fornecedores/
               )}
             </Card>
           )}
+
+          <Card title="Pedidos / listas de compras">
+            {orders.length === 0 ? (
+              <p className="text-sm text-slate-400">Nenhuma lista com este fornecedor.</p>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {orders.map((order) => (
+                  <li key={order.id}>
+                    <Link href={`/listas/${order.id}`} className="flex min-h-11 items-center gap-2 py-1.5 hover:text-brand-700">
+                      <ClipboardList className="size-4 shrink-0 text-slate-400" aria-hidden />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{order.title}</span>
+                        <span className="block text-xs text-slate-500">
+                          {formatDateBr(order.orderDate)} · {order.itemCount} {order.itemCount === 1 ? "item" : "itens"}
+                        </span>
+                      </span>
+                      <PurchaseStatusBadge status={order.status} />
+                      <span className="text-sm font-semibold tabular-nums">{formatMoney(order.total)}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Link
+              href={`/listas/nova?fornecedor=${supplier.id}`}
+              className={buttonClasses("secondary", "md", "mt-3 w-full")}
+            >
+              <Plus className="size-4" aria-hidden />
+              Nova lista de compras
+            </Link>
+          </Card>
 
           <Card title="Observações" className={hasPortal ? "" : "lg:col-span-1"}>
             {supplier.notes ? (

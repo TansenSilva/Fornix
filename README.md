@@ -54,6 +54,10 @@ Funcionalidades da versão 1:
 - Indicadores simples: fornecedores, favoritos, categorias
 - PWA instalável (manifest, ícones, modo standalone, página offline)
 - Layout mobile-first: 1 coluna no celular, 2 no tablet, 3 no desktop
+- **Listas de compras / pedidos**: itens em formato de planilha (produto, quantidade, valor
+  unitário, subtotal) com total em tempo real, status (rascunho, pedido feito, recebido,
+  cancelado), itens conferidos, duplicar lista, copiar como texto e enviar pelo WhatsApp do
+  fornecedor; histórico de pedidos na página de cada fornecedor
 
 ## 2. Tecnologias
 
@@ -169,6 +173,8 @@ Os arquivos ficam em `supabase/migrations/` e devem ser aplicados **em ordem**, 
    `cleanup_orphan_tags`), categorias padrão e políticas RLS.
 2. `20260927000000_supplier_document_address.sql` — CNPJ/CPF (inclui o CNPJ alfanumérico) e
    endereço completo (CEP, rua, número, complemento, bairro); aviso de duplicidade por CNPJ/CPF.
+3. `20260928000000_purchase_lists.sql` — listas de compras/pedidos (`purchase_lists`,
+   `purchase_list_items`, view `purchase_list_summaries` com totais), com RLS.
 
 Dica para copiar um arquivo grande: abra-o no GitHub, clique em **Raw**, use Ctrl+A / Ctrl+C e
 cole no SQL Editor.
