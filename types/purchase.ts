@@ -1,4 +1,6 @@
 export type PurchaseStatus = "draft" | "ordered" | "received" | "canceled";
+/** BRL = lista nacional; USD = lista de importação (preços em dólar + taxa %). */
+export type PurchaseCurrency = "BRL" | "USD";
 
 export const PURCHASE_STATUS_LABELS: Record<PurchaseStatus, string> = {
   draft: "Rascunho",
@@ -13,6 +15,9 @@ export interface PurchaseItem {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  /** Somente em listas de importação. */
+  unitPriceUsd: number | null;
+  feePercent: number;
   checked: boolean;
   position: number;
 }
@@ -26,6 +31,10 @@ export interface PurchaseList {
   status: PurchaseStatus;
   orderDate: string;
   notes: string | null;
+  currency: PurchaseCurrency;
+  exchangeRate: number | null;
+  exchangeRateUpdatedAt: string | null;
+  defaultFeePercent: number;
   createdAt: string;
   updatedAt: string;
   items: PurchaseItem[];
@@ -40,6 +49,8 @@ export interface PurchaseListSummary {
   orderDate: string;
   itemCount: number;
   total: number;
+  currency: PurchaseCurrency;
+  totalUsd: number;
   updatedAt: string;
 }
 

@@ -58,6 +58,9 @@ Funcionalidades da versão 1:
   unitário, subtotal) com total em tempo real, status (rascunho, pedido feito, recebido,
   cancelado), itens conferidos, duplicar lista, copiar como texto e enviar pelo WhatsApp do
   fornecedor; histórico de pedidos na página de cada fornecedor
+- **Listas de importação (US$)**: cotação do dólar automática (AwesomeAPI, com ExchangeRate-API
+  como alternativa) ou manual, taxa % padrão e por item, colunas US$ / % / R$ e totais em
+  dólar e em reais
 
 ## 2. Tecnologias
 
@@ -175,6 +178,9 @@ Os arquivos ficam em `supabase/migrations/` e devem ser aplicados **em ordem**, 
    endereço completo (CEP, rua, número, complemento, bairro); aviso de duplicidade por CNPJ/CPF.
 3. `20260928000000_purchase_lists.sql` — listas de compras/pedidos (`purchase_lists`,
    `purchase_list_items`, view `purchase_list_summaries` com totais), com RLS.
+4. `20260929000000_purchase_lists_import.sql` — listas de importação: moeda da lista, cotação do
+   dólar, taxa % por item; o preço em reais é calculado pelo banco
+   (US$ × cotação × (1 + taxa %)) e recalculado quando a cotação muda.
 
 Dica para copiar um arquivo grande: abra-o no GitHub, clique em **Raw**, use Ctrl+A / Ctrl+C e
 cole no SQL Editor.

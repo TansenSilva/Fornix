@@ -1,13 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { DollarSign, Loader2, RefreshCw } from "lucide-react";
 import { buttonClasses } from "@/components/ui/button";
 import { Field, inputClasses } from "@/components/ui/field";
 import { createPurchaseList } from "@/lib/data/purchase-lists";
+import { fetchUsdBrlRate } from "@/lib/exchange-rate";
 import { createClient } from "@/lib/supabase/client";
-import type { SupplierOption } from "@/types/purchase";
+import type { PurchaseCurrency, SupplierOption } from "@/types/purchase";
+import { fixedInputValue, maskFixed, maskPercent, parseDecimal } from "@/utils/money";
 import { formatDayMonth, todayIso } from "@/utils/date";
 import { cleanLabel } from "@/utils/text";
 
@@ -23,9 +25,37 @@ export function NewPurchaseListForm({ suppliers, defaultSupplierId }: Props) {
   const [title, setTitle] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currency, setCurrency] = useState<PurchaseCurrency>("BRL");
+  const [rate, setRate] = useState("");
+  const [fee, setFee] = useState("");
+  const [rateStatus, setRateStatus] = useState<"idle" | "loading" | "error">("idle");
+
+  async function loadRate(signal?: AbortSignal) {
+    setRateStatus("loading");
+    try {
+      const result = await fetchUsdBrlRate(signal ?? new AbortController().signal);
+      setRate(fixedInputValue(result.rate, 4));
+      setRateStatus("idle");
+    } catch {
+      if (!signal?.aborted) setRateStatus("error");
+    }
+  }
+
+  // Ao escolher "Importação", busca a cotação do dólar automaticamente.
+  useEffect(() => {
+    if (currency !== "USD" || rate) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => void loadRate(controller.signal), 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currency]);
 
   const supplierName = suppliers.find((s) => s.id === supplierId)?.name;
-  const suggestedTitle = `${supplierName ? `Pedido ${supplierName}` : "Lista de compras"} ${formatDayMonth(orderDate)}`;
+  const prefix = currency === "USD" ? "Importação" : supplierName ? "Pedido" : "Lista de compras";
+  const suggestedTitle = `${prefix}${supplierName ? ` ${supplierName}` : ""} ${formatDayMonth(orderDate)}`;
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -36,6 +66,9 @@ export function NewPurchaseListForm({ suppliers, defaultSupplierId }: Props) {
         title: (cleanLabel(title) || suggestedTitle).slice(0, 120),
         supplierId: supplierId || null,
         orderDate,
+        currency,
+        exchangeRate: currency === "USD" ? parseDecimal(rate) || null : null,
+        defaultFeePercent: currency === "USD" ? parseDecimal(fee) : 0,
       });
       router.replace(`/listas/${id}`);
     } catch {
@@ -46,6 +79,71 @@ export function NewPurchaseListForm({ suppliers, defaultSupplierId }: Props) {
 
   return (
     <form onSubmit={onSubmit} className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <fieldset>
+        <legend className="mb-1 text-sm font-medium text-slate-700">Tipo de lista</legend>
+        <div className="grid grid-cols-2 gap-2">
+          {(
+            [
+              { value: "BRL", title: "Nacional", hint: "Preços em reais" },
+              { value: "USD", title: "Importação", hint: "Dólar + taxa %" },
+            ] as const
+          ).map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={currency === option.value}
+              onClick={() => setCurrency(option.value)}
+              className={`rounded-xl border p-3 text-left ${
+                currency === option.value
+                  ? "border-brand-600 bg-brand-50 ring-1 ring-brand-600"
+                  : "border-slate-200 bg-white hover:bg-slate-50"
+              }`}
+            >
+              <span className="flex items-center gap-1.5 font-medium">
+                {option.value === "USD" && <DollarSign className="size-4" aria-hidden />}
+                {option.title}
+              </span>
+              <span className="block text-xs text-slate-500">{option.hint}</span>
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      {currency === "USD" && (
+        <div className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3">
+          <Field id="rate" label="Cotação (R$ por US$ 1)" hint={rateStatus === "error" ? "Não foi possível buscar. Digite a cotação." : "Você pode ajustar."}>
+            <div className="relative">
+              <input
+                id="rate"
+                inputMode="numeric"
+                value={rate}
+                onChange={(event) => setRate(maskFixed(event.target.value, 4))}
+                placeholder="5,0000"
+                className={`${inputClasses()} pr-10`}
+              />
+              <button
+                type="button"
+                onClick={() => void loadRate()}
+                aria-label="Buscar cotação atual"
+                className="absolute top-1/2 right-0.5 inline-flex size-10 -translate-y-1/2 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+              >
+                <RefreshCw className={`size-4 ${rateStatus === "loading" ? "animate-spin" : ""}`} aria-hidden />
+              </button>
+            </div>
+          </Field>
+          <Field id="fee" label="Taxa de importação (%)" hint="Aplicada a cada item.">
+            <input
+              id="fee"
+              inputMode="decimal"
+              value={fee}
+              onChange={(event) => setFee(maskPercent(event.target.value))}
+              placeholder="0"
+              className={inputClasses()}
+            />
+          </Field>
+        </div>
+      )}
+
       <Field id="supplier" label="Fornecedor (opcional)">
         <select
           id="supplier"

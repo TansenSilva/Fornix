@@ -2,23 +2,27 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, CopyPlus, ClipboardCopy, MessageCircle, Plus, Trash2 } from "lucide-react";
+import { Check, ClipboardCopy, CopyPlus, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/ActionMenu";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import { buttonClasses } from "@/components/ui/button";
 import { useCopy } from "@/hooks/useCopy";
+import { fetchUsdBrlRate } from "@/lib/exchange-rate";
 import {
   addPurchaseItem,
+  applyFeeToAllItems,
   deletePurchaseItem,
   deletePurchaseList,
   duplicatePurchaseList,
+  getPurchaseItems,
   updatePurchaseItem,
   updatePurchaseList,
 } from "@/lib/data/purchase-lists";
 import { createClient } from "@/lib/supabase/client";
 import {
   PURCHASE_STATUS_LABELS,
+  type PurchaseCurrency,
   type PurchaseItem,
   type PurchaseList,
   type PurchaseStatus,
@@ -26,12 +30,19 @@ import {
 } from "@/types/purchase";
 import { formatDateBr, todayIso } from "@/utils/date";
 import {
+  fixedInputValue,
   formatMoney,
   formatQuantity,
+  formatUsd,
+  importUnitPrice,
+  maskFixed,
+  maskPercent,
   maskQuantity,
   moneyInputValue,
+  parseDecimal,
   parseMoney,
   parseQuantity,
+  percentInputValue,
   quantityInputValue,
 } from "@/utils/money";
 import { whatsappLink } from "@/utils/phone";
@@ -42,7 +53,11 @@ interface Row {
   id: string;
   name: string;
   qty: string;
+  /** Valor unitário em reais (listas nacionais). */
   price: string;
+  /** Valor unitário em dólar (listas de importação). */
+  usd: string;
+  fee: string;
   checked: boolean;
   saved: PurchaseItem;
 }
@@ -53,6 +68,8 @@ function toRow(item: PurchaseItem): Row {
     name: item.productName,
     qty: quantityInputValue(item.quantity),
     price: moneyInputValue(item.unitPrice),
+    usd: moneyInputValue(item.unitPriceUsd ?? 0),
+    fee: percentInputValue(item.feePercent),
     checked: item.checked,
     saved: item,
   };
@@ -61,13 +78,22 @@ function toRow(item: PurchaseItem): Row {
 const cellInput =
   "h-10 w-full min-w-0 rounded-lg border border-slate-200 bg-white px-2.5 focus:border-brand-600 focus:ring-2 focus:ring-brand-100 focus:outline-none";
 
+function formatDateTime(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
 interface Props {
   list: PurchaseList;
   suppliers: SupplierOption[];
   suggestions: string[];
 }
 
-/** Lista de compras em formato de planilha: lança produto, quantidade e valor; o total atualiza na hora. */
+/**
+ * Lista de compras em formato de planilha: lança produto, quantidade e valor;
+ * o total atualiza na hora. Em listas de importação o valor é digitado em
+ * dólar e o preço em reais sai de: US$ × cotação × (1 + taxa %).
+ */
 export function PurchaseListEditor({ list: initialList, suppliers, suggestions }: Props) {
   const router = useRouter();
   const { toast } = useToast();
@@ -80,49 +106,82 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
     status: initialList.status,
     orderDate: initialList.orderDate,
     notes: initialList.notes ?? "",
+    currency: initialList.currency,
+    rate: fixedInputValue(initialList.exchangeRate, 4),
+    rateUpdatedAt: initialList.exchangeRateUpdatedAt,
+    defaultFee: percentInputValue(initialList.defaultFeePercent),
   });
   const savedMeta = useRef(meta);
   const [rows, setRows] = useState<Row[]>(() => initialList.items.map(toRow));
-  const [draft, setDraft] = useState({ name: "", qty: "1", price: "" });
+  const [draft, setDraft] = useState({ name: "", qty: "1", price: "", usd: "", fee: meta.defaultFee });
   const [adding, setAdding] = useState(false);
+  const [loadingRate, setLoadingRate] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
   const qtyRef = useRef<HTMLInputElement>(null);
   const priceRef = useRef<HTMLInputElement>(null);
+  const feeRef = useRef<HTMLInputElement>(null);
 
+  const isImport = meta.currency === "USD";
+  const rate = parseDecimal(meta.rate);
   const uniqueSuggestions = useMemo(() => [...new Set(suggestions)].slice(0, 500), [suggestions]);
-  const supplier = suppliers.find((s) => s.id === meta.supplierId);
   const supplierWhatsapp = meta.supplierId === initialList.supplierId ? initialList.supplierWhatsapp : null;
 
-  // Totais calculados na hora, a partir do que está digitado.
+  /** Preço unitário em reais da linha, calculado a partir do que está digitado. */
+  function unitBrl(row: { price: string; usd: string; fee: string }): number {
+    if (isImport && row.usd) return importUnitPrice(parseMoney(row.usd), rate, parseDecimal(row.fee));
+    return parseMoney(row.price);
+  }
+
   const totals = useMemo(() => {
     let total = 0;
+    let totalUsd = 0;
     let checkedTotal = 0;
     let checkedCount = 0;
     for (const row of rows) {
-      const line = Math.round(parseQuantity(row.qty) * parseMoney(row.price) * 100) / 100;
+      const qty = parseQuantity(row.qty);
+      const line = Math.round(qty * unitBrl(row) * 100) / 100;
       total += line;
+      if (row.usd) totalUsd += Math.round(qty * parseMoney(row.usd) * 100) / 100;
       if (row.checked) {
         checkedTotal += line;
         checkedCount += 1;
       }
     }
-    return { total, checkedTotal, checkedCount };
-  }, [rows]);
+    return { total, totalUsd, checkedTotal, checkedCount };
+    // unitBrl depende de isImport/rate, já listados
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, isImport, rate]);
 
   // ---------------------------------------------------------------- lista
+  async function reloadItems() {
+    try {
+      const items = await getPurchaseItems(createClient(), initialList.id);
+      setRows(items.map(toRow));
+    } catch {
+      // mantém os valores atuais
+    }
+  }
+
   async function saveMeta(patch: Partial<typeof meta>) {
     const next = { ...meta, ...patch };
     setMeta(next);
     const previous = savedMeta.current;
     const title = cleanLabel(next.title) || previous.title;
+    const nextRate = parseDecimal(next.rate);
+    const rateChanged = next.rate !== previous.rate && nextRate > 0;
     const changes = {
       ...(title !== previous.title ? { title } : {}),
       ...(next.supplierId !== previous.supplierId ? { supplier_id: next.supplierId || null } : {}),
       ...(next.status !== previous.status ? { status: next.status } : {}),
       ...(next.orderDate !== previous.orderDate ? { order_date: next.orderDate } : {}),
       ...(next.notes !== previous.notes ? { notes: next.notes.trim() || null } : {}),
+      ...(next.currency !== previous.currency ? { currency: next.currency } : {}),
+      ...(rateChanged
+        ? { exchange_rate: nextRate, exchange_rate_updated_at: next.rateUpdatedAt ?? new Date().toISOString() }
+        : {}),
+      ...(next.defaultFee !== previous.defaultFee ? { default_fee_percent: parseDecimal(next.defaultFee) } : {}),
     };
     if (Object.keys(changes).length === 0) return;
     try {
@@ -130,9 +189,46 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
       savedMeta.current = { ...next, title };
       setMeta((current) => ({ ...current, title }));
       if (changes.status) toast(`Status: ${PURCHASE_STATUS_LABELS[next.status]}`);
+      // O banco recalcula os preços em reais quando a cotação ou o tipo mudam.
+      if (rateChanged || changes.currency) await reloadItems();
     } catch {
       setMeta(previous);
       toast("Não foi possível salvar a lista.", "error");
+    }
+  }
+
+  async function refreshRate(extra: Partial<typeof meta> = {}) {
+    setLoadingRate(true);
+    try {
+      const result = await fetchUsdBrlRate(new AbortController().signal);
+      await saveMeta({ ...extra, rate: fixedInputValue(result.rate, 4), rateUpdatedAt: new Date().toISOString() });
+      toast(`Cotação: ${formatMoney(result.rate)}`);
+    } catch {
+      if (Object.keys(extra).length > 0) await saveMeta(extra);
+      toast("Não foi possível buscar a cotação. Digite manualmente.", "error");
+    } finally {
+      setLoadingRate(false);
+    }
+  }
+
+  async function changeCurrency(currency: PurchaseCurrency) {
+    if (currency === "USD" && !meta.rate) {
+      await refreshRate({ currency });
+    } else {
+      await saveMeta({ currency });
+    }
+  }
+
+  async function applyFeeToAll() {
+    const fee = parseDecimal(meta.defaultFee);
+    try {
+      await saveMeta({});
+      await applyFeeToAllItems(createClient(), initialList.id, fee);
+      await reloadItems();
+      setDraft((d) => ({ ...d, fee: meta.defaultFee }));
+      toast(`Taxa de ${formatQuantity(fee)}% aplicada a todos os itens`);
+    } catch {
+      toast("Não foi possível aplicar a taxa.", "error");
     }
   }
 
@@ -147,20 +243,30 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
     const current = { ...row, ...override };
     const name = cleanLabel(current.name);
     const quantity = parseQuantity(current.qty);
-    const unitPrice = parseMoney(current.price);
     const saved = current.saved;
 
     if (!name || quantity <= 0) {
       editRow(id, toRow(saved)); // valor inválido: volta ao último salvo
-      if (!name) toast("O produto não pode ficar vazio.", "error");
-      else toast("A quantidade deve ser maior que zero.", "error");
+      toast(name ? "A quantidade deve ser maior que zero." : "O produto não pode ficar vazio.", "error");
       return;
     }
+
+    const usd = current.usd ? parseMoney(current.usd) : null;
+    const fee = parseDecimal(current.fee);
+    const unitPrice = isImport && usd !== null ? importUnitPrice(usd, rate, fee) : parseMoney(current.price);
     const patch = {
       ...(name !== saved.productName ? { product_name: name } : {}),
       ...(quantity !== saved.quantity ? { quantity } : {}),
-      ...(unitPrice !== saved.unitPrice ? { unit_price: unitPrice } : {}),
       ...(current.checked !== saved.checked ? { checked: current.checked } : {}),
+      ...(isImport
+        ? {
+            ...(usd !== saved.unitPriceUsd ? { unit_price_usd: usd } : {}),
+            ...(fee !== saved.feePercent ? { fee_percent: fee } : {}),
+            ...(usd === null && unitPrice !== saved.unitPrice ? { unit_price: unitPrice } : {}),
+          }
+        : unitPrice !== saved.unitPrice
+          ? { unit_price: unitPrice }
+          : {}),
     };
     if (Object.keys(patch).length === 0) return;
     try {
@@ -168,7 +274,13 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
       setRows((list) =>
         list.map((item) =>
           item.id === id
-            ? { ...item, saved: updated, name: updated.productName, checked: updated.checked }
+            ? {
+                ...item,
+                saved: updated,
+                name: updated.productName,
+                checked: updated.checked,
+                price: moneyInputValue(updated.unitPrice),
+              }
             : item,
         ),
       );
@@ -200,17 +312,21 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
       return;
     }
     const quantity = parseQuantity(draft.qty) || 1;
+    const usd = isImport && draft.usd ? parseMoney(draft.usd) : null;
+    const fee = isImport ? parseDecimal(draft.fee) : 0;
     setAdding(true);
     try {
       const position = rows.reduce((max, row) => Math.max(max, row.saved.position), -1) + 1;
       const item = await addPurchaseItem(createClient(), initialList.id, {
         productName: name,
         quantity,
-        unitPrice: parseMoney(draft.price),
+        unitPrice: usd !== null ? importUnitPrice(usd, rate, fee) : parseMoney(draft.price),
+        unitPriceUsd: usd,
+        feePercent: fee,
         position,
       });
       setRows((list) => [...list, toRow(item)]);
-      setDraft({ name: "", qty: "1", price: "" });
+      setDraft({ name: "", qty: "1", price: "", usd: "", fee: meta.defaultFee });
       nameRef.current?.focus();
     } catch {
       toast("Não foi possível adicionar o item.", "error");
@@ -223,17 +339,24 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
   function listAsText(): string {
     const lines = rows.map((row) => {
       const qty = parseQuantity(row.qty);
-      const price = parseMoney(row.price);
       const base = `• ${formatQuantity(qty)}x ${cleanLabel(row.name)}`;
+      if (isImport && row.usd) {
+        const usd = parseMoney(row.usd);
+        return `${base} — ${formatUsd(usd)} = ${formatUsd(qty * usd)}`;
+      }
+      const price = parseMoney(row.price);
       return price > 0 ? `${base} — ${formatMoney(price)} = ${formatMoney(qty * price)}` : base;
     });
-    return [
-      `*${cleanLabel(meta.title)}*`,
-      `Data: ${formatDateBr(meta.orderDate)}`,
-      "",
-      ...lines,
-      ...(totals.total > 0 ? ["", `*Total: ${formatMoney(totals.total)}*`] : []),
-    ].join("\n");
+    const footer = isImport
+      ? [
+          "",
+          `*Total: ${formatUsd(totals.totalUsd)}*`,
+          `Em reais: ${formatMoney(totals.total)} (cotação ${meta.rate}${parseDecimal(meta.defaultFee) ? ` + ${meta.defaultFee}%` : ""})`,
+        ]
+      : totals.total > 0
+        ? ["", `*Total: ${formatMoney(totals.total)}*`]
+        : [];
+    return [`*${cleanLabel(meta.title)}*`, `Data: ${formatDateBr(meta.orderDate)}`, "", ...lines, ...footer].join("\n");
   }
 
   async function duplicate() {
@@ -242,11 +365,16 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
         ...initialList,
         title: meta.title,
         supplierId: meta.supplierId || null,
+        currency: meta.currency,
+        exchangeRate: rate || null,
+        defaultFeePercent: parseDecimal(meta.defaultFee),
         items: rows.map((row) => ({
           ...row.saved,
           productName: cleanLabel(row.name) || row.saved.productName,
           quantity: parseQuantity(row.qty) || row.saved.quantity,
-          unitPrice: parseMoney(row.price),
+          unitPrice: unitBrl(row),
+          unitPriceUsd: row.usd ? parseMoney(row.usd) : null,
+          feePercent: parseDecimal(row.fee),
         })),
       };
       const id = await duplicatePurchaseList(createClient(), list, todayIso());
@@ -296,6 +424,11 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
     },
   ];
 
+  // Colunas da "planilha" (desktop). Mobile usa layout em duas linhas por item.
+  const desktopCols = isImport
+    ? "md:grid-cols-[2.5rem_1fr_4.5rem_7.5rem_4.5rem_7rem_7rem_2.5rem]"
+    : "md:grid-cols-[2.5rem_1fr_6rem_9rem_8rem_2.5rem]";
+
   return (
     <div className="space-y-3 pb-24">
       {/* Cabeçalho da lista */}
@@ -315,7 +448,7 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
           />
           <ActionMenu items={menu} label="Ações da lista" />
         </div>
-        <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-[2fr_1fr_1fr]">
+        <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-[2fr_1fr_1fr_1fr]">
           <div className="col-span-2 min-w-0 md:col-span-1">
             <label htmlFor="list-supplier" className="mb-1 block text-xs font-medium text-slate-500">
               Fornecedor
@@ -335,6 +468,20 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
             </select>
           </div>
           <div className="min-w-0">
+            <label htmlFor="list-currency" className="mb-1 block text-xs font-medium text-slate-500">
+              Tipo
+            </label>
+            <select
+              id="list-currency"
+              value={meta.currency}
+              onChange={(event) => void changeCurrency(event.target.value as PurchaseCurrency)}
+              className={cellInput}
+            >
+              <option value="BRL">Nacional</option>
+              <option value="USD">Importação</option>
+            </select>
+          </div>
+          <div className="min-w-0">
             <label htmlFor="list-status" className="mb-1 block text-xs font-medium text-slate-500">
               Status
             </label>
@@ -351,7 +498,7 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
               ))}
             </select>
           </div>
-          <div className="min-w-0">
+          <div className="col-span-2 min-w-0 md:col-span-1">
             <label htmlFor="list-date" className="mb-1 block text-xs font-medium text-slate-500">
               Data
             </label>
@@ -364,18 +511,88 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
             />
           </div>
         </div>
-        {supplier && !supplierWhatsapp && meta.supplierId !== initialList.supplierId && (
-          <p className="mt-2 text-xs text-slate-500">Recarregue a página para ativar o envio pelo WhatsApp.</p>
+
+        {isImport && (
+          <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-2.5 md:grid-cols-[1fr_1fr_auto] md:items-end">
+            <div className="min-w-0">
+              <label htmlFor="list-rate" className="mb-1 block text-xs font-medium text-slate-500">
+                Cotação (R$ por US$ 1)
+              </label>
+              <div className="relative">
+                <input
+                  id="list-rate"
+                  inputMode="numeric"
+                  value={meta.rate}
+                  placeholder="5,0000"
+                  onChange={(event) =>
+                    setMeta((m) => ({ ...m, rate: maskFixed(event.target.value, 4), rateUpdatedAt: null }))
+                  }
+                  onBlur={() => void saveMeta({})}
+                  className={`${cellInput} pr-10 text-right tabular-nums`}
+                />
+                <button
+                  type="button"
+                  onClick={() => void refreshRate()}
+                  disabled={loadingRate}
+                  aria-label="Buscar cotação atual do dólar"
+                  title="Buscar cotação atual"
+                  className="absolute top-1/2 right-0.5 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-md text-brand-600 hover:bg-brand-50"
+                >
+                  <RefreshCw className={`size-4 ${loadingRate ? "animate-spin" : ""}`} aria-hidden />
+                </button>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-slate-500">
+                {meta.rateUpdatedAt ? `Cotação de ${formatDateTime(meta.rateUpdatedAt)}` : "Cotação manual"}
+              </p>
+            </div>
+            <div className="min-w-0">
+              <label htmlFor="list-fee" className="mb-1 block text-xs font-medium text-slate-500">
+                Taxa padrão (%)
+              </label>
+              <input
+                id="list-fee"
+                inputMode="decimal"
+                value={meta.defaultFee}
+                placeholder="0"
+                onChange={(event) => {
+                  const defaultFee = maskPercent(event.target.value);
+                  setMeta((m) => ({ ...m, defaultFee }));
+                  setDraft((d) => ({ ...d, fee: defaultFee }));
+                }}
+                onBlur={() => void saveMeta({})}
+                className={`${cellInput} text-right tabular-nums`}
+              />
+              <p className="mt-0.5 text-[11px] text-slate-500">Usada nos novos itens.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void applyFeeToAll()}
+              disabled={rows.length === 0}
+              className={buttonClasses("secondary", "sm", "col-span-2 md:col-span-1 md:mb-4")}
+            >
+              Aplicar % a todos
+            </button>
+          </div>
         )}
       </section>
 
       {/* Itens */}
       <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="hidden grid-cols-[2.5rem_1fr_6rem_9rem_8rem_2.5rem] gap-2 border-b border-slate-100 px-3 py-2 text-xs font-medium tracking-wide text-slate-500 uppercase md:grid">
+        <div
+          className={`hidden gap-2 border-b border-slate-100 px-3 py-2 text-xs font-medium tracking-wide text-slate-500 uppercase md:grid ${desktopCols}`}
+        >
           <span />
           <span>Produto</span>
           <span className="text-right">Qtd</span>
-          <span className="text-right">Valor unit.</span>
+          {isImport ? (
+            <>
+              <span className="text-right">US$ unit.</span>
+              <span className="text-right">Taxa %</span>
+              <span className="text-right">R$ unit.</span>
+            </>
+          ) : (
+            <span className="text-right">Valor unit.</span>
+          )}
           <span className="text-right">Subtotal</span>
           <span />
         </div>
@@ -388,11 +605,12 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
 
         <ul className="divide-y divide-slate-100">
           {rows.map((row, index) => {
-            const line = parseQuantity(row.qty) * parseMoney(row.price);
+            const unit = unitBrl(row);
+            const line = parseQuantity(row.qty) * unit;
             return (
               <li
                 key={row.id}
-                className={`grid grid-cols-[2.5rem_1fr_2.5rem] gap-x-2 gap-y-1.5 px-3 py-2 md:grid-cols-[2.5rem_1fr_6rem_9rem_8rem_2.5rem] md:items-center ${
+                className={`grid grid-cols-[2.5rem_1fr_2.5rem] gap-x-2 gap-y-1.5 px-3 py-2 md:items-center ${desktopCols} ${
                   row.checked ? "bg-green-50/50" : ""
                 }`}
               >
@@ -430,35 +648,88 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
                 >
                   <Trash2 className="size-4" aria-hidden />
                 </button>
-                <div className="col-span-2 col-start-2 grid min-w-0 grid-cols-[4rem_minmax(0,1fr)_auto] items-center gap-2 md:contents">
-                  <div className="min-w-0">
-                    <label htmlFor={`qty-${row.id}`} className="sr-only">
-                      Quantidade
-                    </label>
-                    <input
-                      id={`qty-${row.id}`}
-                      inputMode="decimal"
-                      value={row.qty}
-                      onChange={(event) => editRow(row.id, { qty: maskQuantity(event.target.value) })}
-                      onBlur={() => void commitRow(row.id)}
-                      className={`${cellInput} text-right tabular-nums`}
-                    />
+
+                {isImport ? (
+                  <div className="col-span-2 col-start-2 grid min-w-0 grid-cols-[3.5rem_minmax(0,1fr)_4rem] items-center gap-2 md:contents">
+                    <div className="min-w-0">
+                      <label htmlFor={`qty-${row.id}`} className="sr-only">
+                        Quantidade
+                      </label>
+                      <input
+                        id={`qty-${row.id}`}
+                        inputMode="decimal"
+                        value={row.qty}
+                        onChange={(event) => editRow(row.id, { qty: maskQuantity(event.target.value) })}
+                        onBlur={() => void commitRow(row.id)}
+                        className={`${cellInput} text-right tabular-nums`}
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <label htmlFor={`usd-${row.id}`} className="sr-only">
+                        Valor unitário em dólar
+                      </label>
+                      <MoneyInput
+                        id={`usd-${row.id}`}
+                        prefix="US$"
+                        value={row.usd}
+                        onValueChange={(usd) => editRow(row.id, { usd })}
+                        onBlur={() => void commitRow(row.id)}
+                      />
+                    </div>
+                    <div className="relative min-w-0">
+                      <label htmlFor={`fee-${row.id}`} className="sr-only">
+                        Taxa em porcentagem
+                      </label>
+                      <input
+                        id={`fee-${row.id}`}
+                        inputMode="decimal"
+                        value={row.fee}
+                        placeholder="0"
+                        onChange={(event) => editRow(row.id, { fee: maskPercent(event.target.value) })}
+                        onBlur={() => void commitRow(row.id)}
+                        className={`${cellInput} pr-6 text-right tabular-nums`}
+                      />
+                      <span className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-sm text-slate-400">
+                        %
+                      </span>
+                    </div>
+                    <span className="col-span-3 flex items-baseline justify-between gap-2 text-sm md:contents">
+                      <span className="text-slate-500 tabular-nums md:text-right">
+                        <span className="md:hidden">R$ unit.: </span>
+                        {formatMoney(unit)}
+                      </span>
+                      <span className="font-semibold tabular-nums md:text-right">{formatMoney(line)}</span>
+                    </span>
                   </div>
-                  <div className="min-w-0">
-                    <label htmlFor={`price-${row.id}`} className="sr-only">
-                      Valor unitário
-                    </label>
-                    <MoneyInput
-                      id={`price-${row.id}`}
-                      value={row.price}
-                      onValueChange={(price) => editRow(row.id, { price })}
-                      onBlur={() => void commitRow(row.id)}
-                    />
+                ) : (
+                  <div className="col-span-2 col-start-2 grid min-w-0 grid-cols-[4rem_minmax(0,1fr)_auto] items-center gap-2 md:contents">
+                    <div className="min-w-0">
+                      <label htmlFor={`qty-${row.id}`} className="sr-only">
+                        Quantidade
+                      </label>
+                      <input
+                        id={`qty-${row.id}`}
+                        inputMode="decimal"
+                        value={row.qty}
+                        onChange={(event) => editRow(row.id, { qty: maskQuantity(event.target.value) })}
+                        onBlur={() => void commitRow(row.id)}
+                        className={`${cellInput} text-right tabular-nums`}
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <label htmlFor={`price-${row.id}`} className="sr-only">
+                        Valor unitário
+                      </label>
+                      <MoneyInput
+                        id={`price-${row.id}`}
+                        value={row.price}
+                        onValueChange={(price) => editRow(row.id, { price })}
+                        onBlur={() => void commitRow(row.id)}
+                      />
+                    </div>
+                    <span className="min-w-[5rem] text-right text-sm font-semibold tabular-nums">{formatMoney(line)}</span>
                   </div>
-                  <span className="min-w-[5rem] text-right text-sm font-semibold tabular-nums">
-                    {formatMoney(line)}
-                  </span>
-                </div>
+                )}
               </li>
             );
           })}
@@ -467,8 +738,14 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
         {/* Nova linha */}
         <div className="border-t border-slate-200 bg-slate-50/70 p-3">
           <p className="mb-2 text-xs font-medium tracking-wide text-slate-500 uppercase">Adicionar item</p>
-          <div className="grid grid-cols-[4.5rem_1fr] gap-2 md:grid-cols-[1fr_6rem_9rem_auto]">
-            <div className="col-span-2 min-w-0 md:col-span-1">
+          <div
+            className={`grid gap-2 ${
+              isImport
+                ? "grid-cols-[3.5rem_minmax(0,1fr)_4.5rem] md:grid-cols-[1fr_4.5rem_7.5rem_4.5rem_auto]"
+                : "grid-cols-[4.5rem_1fr] md:grid-cols-[1fr_6rem_9rem_auto]"
+            }`}
+          >
+            <div className={`min-w-0 md:col-span-1 ${isImport ? "col-span-3" : "col-span-2"}`}>
               <label htmlFor="new-item-name" className="sr-only">
                 Produto
               </label>
@@ -514,32 +791,70 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
             </div>
             <div className="min-w-0">
               <label htmlFor="new-item-price" className="sr-only">
-                Valor unitário
+                {isImport ? "Valor unitário em dólar" : "Valor unitário"}
               </label>
               <MoneyInput
                 id="new-item-price"
                 ref={priceRef}
-                value={draft.price}
-                enterKeyHint="done"
-                onValueChange={(price) => setDraft((d) => ({ ...d, price }))}
+                prefix={isImport ? "US$" : "R$"}
+                value={isImport ? draft.usd : draft.price}
+                enterKeyHint={isImport ? "next" : "done"}
+                onValueChange={(value) => setDraft((d) => (isImport ? { ...d, usd: value } : { ...d, price: value }))}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
-                    void addRow();
+                    if (isImport) feeRef.current?.select();
+                    else void addRow();
                   }
                 }}
               />
             </div>
+            {isImport && (
+              <div className="relative min-w-0">
+                <label htmlFor="new-item-fee" className="sr-only">
+                  Taxa em porcentagem
+                </label>
+                <input
+                  id="new-item-fee"
+                  ref={feeRef}
+                  inputMode="decimal"
+                  value={draft.fee}
+                  placeholder="0"
+                  enterKeyHint="done"
+                  onChange={(event) => setDraft((d) => ({ ...d, fee: maskPercent(event.target.value) }))}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void addRow();
+                    }
+                  }}
+                  className={`${cellInput} pr-6 text-right tabular-nums`}
+                />
+                <span className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-sm text-slate-400">
+                  %
+                </span>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => void addRow()}
               disabled={adding}
-              className={buttonClasses("primary", "sm", "col-span-2 md:col-span-1")}
+              className={buttonClasses("primary", "sm", `${isImport ? "col-span-3" : "col-span-2"} md:col-span-1`)}
             >
               <Plus className="size-4" aria-hidden />
               Adicionar
             </button>
           </div>
+          {isImport && draft.usd && (
+            <p className="mt-1.5 text-xs text-slate-500">
+              = {formatMoney(unitBrl(draft))} por unidade (US$ × {meta.rate || "?"}
+              {parseDecimal(draft.fee) ? ` + ${draft.fee}%` : ""})
+            </p>
+          )}
+          {isImport && !rate && (
+            <p className="mt-1.5 text-xs text-amber-700">Informe a cotação do dólar para calcular os valores em reais.</p>
+          )}
         </div>
         <datalist id={datalistId}>
           {uniqueSuggestions.map((name) => (
@@ -573,12 +888,16 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
               {rows.length === 1 ? "1 item" : `${rows.length} itens`}
               {totals.checkedCount > 0 && ` · ${totals.checkedCount} conferido(s)`}
             </p>
-            {totals.checkedCount > 0 && (
-              <p className="truncate text-green-700">Conferido: {formatMoney(totals.checkedTotal)}</p>
+            {isImport ? (
+              <p className="truncate font-medium text-slate-700 tabular-nums">{formatUsd(totals.totalUsd)}</p>
+            ) : (
+              totals.checkedCount > 0 && (
+                <p className="truncate text-green-700">Conferido: {formatMoney(totals.checkedTotal)}</p>
+              )
             )}
           </div>
           <div className="text-right">
-            <p className="text-xs text-slate-500">Total</p>
+            <p className="text-xs text-slate-500">{isImport ? "Total em reais" : "Total"}</p>
             <p className="text-xl font-bold tabular-nums" aria-live="polite">
               {formatMoney(totals.total)}
             </p>
