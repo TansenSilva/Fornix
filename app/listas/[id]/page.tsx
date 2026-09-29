@@ -22,7 +22,7 @@ export default async function PurchaseListPage({ params }: PageProps<"/listas/[i
     <>
       <AppHeader title="Lista de compras" backHref="/listas" />
       <PageContainer>
-        <div className="mx-auto max-w-5xl">
+        <div className="mx-auto max-w-7xl">
           <PurchaseListEditor list={list} suppliers={suppliers} suggestions={suggestions} />
         </div>
       </PageContainer>

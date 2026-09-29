@@ -47,3 +47,13 @@ dialog::backdrop {
 @utility safe-bottom {
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
 }
+
+/* Impressão / PDF: fundo branco e margens de página */
+@media print {
+  body {
+    background: #fff;
+  }
+  @page {
+    margin: 12mm;
+  }
+}

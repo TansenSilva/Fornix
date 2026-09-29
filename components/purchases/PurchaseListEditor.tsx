@@ -2,12 +2,14 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ClipboardCopy, CopyPlus, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Check, ClipboardCopy, CopyPlus, MessageCircle, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/ActionMenu";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/ui/Toast";
 import { buttonClasses } from "@/components/ui/button";
 import { useCopy } from "@/hooks/useCopy";
+import { useIsClient } from "@/hooks/useIsClient";
 import { fetchUsdBrlRate } from "@/lib/exchange-rate";
 import {
   addPurchaseItem,
@@ -46,8 +48,10 @@ import {
   quantityInputValue,
 } from "@/utils/money";
 import { whatsappLink } from "@/utils/phone";
+import { printWithTitle } from "@/utils/print";
 import { cleanLabel } from "@/utils/text";
 import { MoneyInput } from "./MoneyInput";
+import { PurchaseListPrint } from "./PurchaseListPrint";
 
 interface Row {
   id: string;
@@ -98,6 +102,7 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
   const router = useRouter();
   const { toast } = useToast();
   const copy = useCopy();
+  const isClient = useIsClient();
   const datalistId = useId();
 
   const [meta, setMeta] = useState({
@@ -359,6 +364,10 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
     return [`*${cleanLabel(meta.title)}*`, `Data: ${formatDateBr(meta.orderDate)}`, "", ...lines, ...footer].join("\n");
   }
 
+  function printList() {
+    printWithTitle(cleanLabel(meta.title) || "Lista de compras");
+  }
+
   async function duplicate() {
     try {
       const list: PurchaseList = {
@@ -415,6 +424,7 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
       onSelect: () => copy(listAsText(), "Lista copiada!"),
       icon: <ClipboardCopy className="size-4" aria-hidden />,
     },
+    { label: "Imprimir / salvar PDF", onSelect: printList, icon: <Printer className="size-4" aria-hidden /> },
     { label: "Duplicar lista", onSelect: duplicate, icon: <CopyPlus className="size-4" aria-hidden /> },
     {
       label: "Excluir lista",
@@ -429,8 +439,35 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
     ? "md:grid-cols-[2.5rem_1fr_4.5rem_7.5rem_4.5rem_7rem_7rem_2.5rem]"
     : "md:grid-cols-[2.5rem_1fr_6rem_9rem_8rem_2.5rem]";
 
+  const printRows = rows.map((row) => {
+    const quantity = parseQuantity(row.qty);
+    const unit = unitBrl(row);
+    return {
+      name: cleanLabel(row.name),
+      quantity,
+      usd: isImport && row.usd ? parseMoney(row.usd) : null,
+      fee: parseDecimal(row.fee),
+      unit,
+      line: Math.round(quantity * unit * 100) / 100,
+      checked: row.checked,
+    };
+  });
+
   return (
-    <div className="space-y-3 pb-24">
+    <>
+    <PurchaseListPrint
+      title={cleanLabel(meta.title)}
+      supplierName={suppliers.find((s) => s.id === meta.supplierId)?.name ?? null}
+      orderDate={meta.orderDate}
+      status={meta.status}
+      currency={meta.currency}
+      rate={meta.rate}
+      rows={printRows}
+      total={totals.total}
+      totalUsd={totals.totalUsd}
+      notes={meta.notes}
+    />
+    <div className="space-y-3 pb-24 print:hidden">
       {/* Cabeçalho da lista */}
       <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
         <div className="flex items-start gap-2">
@@ -542,7 +579,7 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
                 </button>
               </div>
               <p className="mt-0.5 truncate text-[11px] text-slate-500">
-                {meta.rateUpdatedAt ? `Cotação de ${formatDateTime(meta.rateUpdatedAt)}` : "Cotação manual"}
+                {meta.rateUpdatedAt ? (isClient ? `Cotação de ${formatDateTime(meta.rateUpdatedAt)}` : "Cotação automática") : "Cotação manual"}
               </p>
             </div>
             <div className="min-w-0">
@@ -630,14 +667,13 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
                   <label htmlFor={`name-${row.id}`} className="sr-only">
                     Produto do item {index + 1}
                   </label>
-                  <input
+                  <AutoTextarea
                     id={`name-${row.id}`}
-                    list={datalistId}
                     value={row.name}
                     maxLength={120}
-                    onChange={(event) => editRow(row.id, { name: event.target.value })}
+                    onChange={(event) => editRow(row.id, { name: event.target.value.replace(/\n/g, " ") })}
                     onBlur={() => void commitRow(row.id)}
-                    className={`${cellInput} ${row.checked ? "text-slate-500 line-through" : ""}`}
+                    className={`${cellInput} h-auto min-h-10 py-2.5 ${row.checked ? "text-slate-500 line-through" : ""}`}
                   />
                 </div>
                 <button
@@ -882,7 +918,7 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
 
       {/* Totais fixos no rodapé */}
       <div className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-4 pt-3 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3">
           <div className="min-w-0 text-sm text-slate-500">
             <p>
               {rows.length === 1 ? "1 item" : `${rows.length} itens`}
@@ -916,5 +952,6 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
         onConfirm={removeList}
       />
     </div>
+    </>
   );
 }
