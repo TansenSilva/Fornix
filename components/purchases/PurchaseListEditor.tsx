@@ -2,7 +2,18 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ClipboardCopy, CopyPlus, MessageCircle, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  ClipboardCopy,
+  CopyPlus,
+  MessageCircle,
+  Plus,
+  Printer,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/ActionMenu";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -18,6 +29,7 @@ import {
   deletePurchaseList,
   duplicatePurchaseList,
   getPurchaseItems,
+  setPurchaseItemPositions,
   updatePurchaseItem,
   updatePurchaseList,
 } from "@/lib/data/purchase-lists";
@@ -300,6 +312,28 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
     await commitRow(row.id, { checked: !row.checked });
   }
 
+  /** Sobe (-1) ou desce (+1) um item e grava a nova ordem. */
+  async function moveRow(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= rows.length) return;
+    const previous = rows;
+    const reordered = [...rows];
+    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    const changed = reordered
+      .map((row, position) => ({ id: row.id, position, current: row.saved.position }))
+      .filter((item) => item.position !== item.current);
+    setRows(reordered.map((row, position) => ({ ...row, saved: { ...row.saved, position } })));
+    try {
+      await setPurchaseItemPositions(
+        createClient(),
+        changed.map(({ id, position }) => ({ id, position })),
+      );
+    } catch {
+      setRows(previous);
+      toast("Não foi possível mover o item.", "error");
+    }
+  }
+
   async function removeRow(row: Row) {
     setRows((list) => list.filter((item) => item.id !== row.id));
     try {
@@ -436,8 +470,8 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
 
   // Colunas da "planilha" (desktop). Mobile usa layout em duas linhas por item.
   const desktopCols = isImport
-    ? "md:grid-cols-[2.5rem_1fr_4.5rem_7.5rem_4.5rem_7rem_7rem_2.5rem]"
-    : "md:grid-cols-[2.5rem_1fr_6rem_9rem_8rem_2.5rem]";
+    ? "md:grid-cols-[4.5rem_1fr_4.5rem_7.5rem_4.5rem_7rem_7rem_2.5rem]"
+    : "md:grid-cols-[4.5rem_1fr_6rem_9rem_8rem_2.5rem]";
 
   const printRows = rows.map((row) => {
     const quantity = parseQuantity(row.qty);
@@ -651,18 +685,63 @@ export function PurchaseListEditor({ list: initialList, suppliers, suggestions }
                   row.checked ? "bg-green-50/50" : ""
                 }`}
               >
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={row.checked}
-                  aria-label={`Marcar ${row.name} como conferido`}
-                  onClick={() => void toggleRow(row)}
-                  className={`row-span-2 inline-flex size-10 items-center justify-center self-center rounded-lg border md:row-span-1 ${
-                    row.checked ? "border-green-600 bg-green-600 text-white" : "border-slate-300 text-transparent"
-                  }`}
-                >
-                  <Check className="size-5" aria-hidden />
-                </button>
+                {/* Mover (↑ ↓) + conferido. Celular: ↑ ☐ ↓ na vertical; desktop: ↑↓ ao lado do ☐ */}
+                <div className="row-span-2 flex flex-col items-center justify-center gap-0.5 self-center md:row-span-1 md:flex-row md:gap-1">
+                  <button
+                    type="button"
+                    onClick={() => void moveRow(index, -1)}
+                    disabled={index === 0}
+                    aria-label={`Mover ${row.name} para cima`}
+                    title="Mover para cima"
+                    className="inline-flex h-8 w-10 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-25 md:hidden"
+                  >
+                    <ChevronUp className="size-5" aria-hidden />
+                  </button>
+                  <div className="hidden flex-col md:flex">
+                    <button
+                      type="button"
+                      onClick={() => void moveRow(index, -1)}
+                      disabled={index === 0}
+                      aria-label={`Mover ${row.name} para cima`}
+                      title="Mover para cima"
+                      className="inline-flex h-5 w-6 items-center justify-center rounded text-slate-500 hover:bg-slate-100 disabled:opacity-25"
+                    >
+                      <ChevronUp className="size-4" aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void moveRow(index, 1)}
+                      disabled={index === rows.length - 1}
+                      aria-label={`Mover ${row.name} para baixo`}
+                      title="Mover para baixo"
+                      className="inline-flex h-5 w-6 items-center justify-center rounded text-slate-500 hover:bg-slate-100 disabled:opacity-25"
+                    >
+                      <ChevronDown className="size-4" aria-hidden />
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={row.checked}
+                    aria-label={`Marcar ${row.name} como conferido`}
+                    onClick={() => void toggleRow(row)}
+                    className={`inline-flex size-10 items-center justify-center rounded-lg border ${
+                      row.checked ? "border-green-600 bg-green-600 text-white" : "border-slate-300 text-transparent"
+                    }`}
+                  >
+                    <Check className="size-5" aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void moveRow(index, 1)}
+                    disabled={index === rows.length - 1}
+                    aria-label={`Mover ${row.name} para baixo`}
+                    title="Mover para baixo"
+                    className="inline-flex h-8 w-10 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-25 md:hidden"
+                  >
+                    <ChevronDown className="size-5" aria-hidden />
+                  </button>
+                </div>
                 <div className="min-w-0">
                   <label htmlFor={`name-${row.id}`} className="sr-only">
                     Produto do item {index + 1}

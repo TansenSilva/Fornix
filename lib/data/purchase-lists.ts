@@ -313,3 +313,15 @@ export async function applyFeeToAllItems(supabase: SupabaseClient, listId: strin
   const { error } = await supabase.from("purchase_list_items").update({ fee_percent: feePercent }).eq("list_id", listId);
   if (error) throw new Error(error.message);
 }
+
+/** Grava a nova ordem dos itens (somente os que mudaram de posição). */
+export async function setPurchaseItemPositions(
+  supabase: SupabaseClient,
+  updates: { id: string; position: number }[],
+): Promise<void> {
+  const results = await Promise.all(
+    updates.map(({ id, position }) => supabase.from("purchase_list_items").update({ position }).eq("id", id)),
+  );
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw new Error(failed.error.message);
+}
